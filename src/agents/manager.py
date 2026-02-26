@@ -48,7 +48,7 @@ class ManagerAgent(BaseAgent):
 
         context = self._build_overview(all_summaries, all_facts)
         return self.llm.chat(
-            self.system_prompt,
+            self._full_prompt,
             [{"role": "user", "content":
               f"Here is the user's data across all life domains:\n\n{context}\n\n"
               f"Identify interesting connections, synergies, or conflicts between "

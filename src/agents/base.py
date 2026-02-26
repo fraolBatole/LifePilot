@@ -1,5 +1,7 @@
 import logging
 
+from agents.skill_loader import build_system_prompt
+
 log = logging.getLogger(__name__)
 
 MAX_REACT_STEPS = 5  # Safety cap to prevent infinite loops
@@ -16,6 +18,8 @@ class BaseAgent:
         self.llm = llm
         self.memory = memory
         self.tool_registry = tool_registry
+        # Build enriched prompt: base + formatting skill + domain skill
+        self._full_prompt = build_system_prompt(self.system_prompt, self.agent_id)
 
     def get_greeting(self) -> str:
         return f"{self.emoji} Hey! I'm {self.name}. What would you like to talk about?"
@@ -31,14 +35,14 @@ class BaseAgent:
 
         if not tools:
             # No tools — simple single-shot (backward-compatible path)
-            response = self.llm.chat(self.system_prompt, context)
+            response = self.llm.chat(self._full_prompt, context)
             self.db.add_message(user_id, self.agent_id, "assistant", response)
             await self.memory.maybe_summarize(user_id, self.agent_id)
             return response
 
         # ── ReAct Loop ───────────────────────────────────────────────
         for step in range(MAX_REACT_STEPS):
-            result = self.llm.chat_with_tools(self.system_prompt, context, tools)
+            result = self.llm.chat_with_tools(self._full_prompt, context, tools)
 
             if result["type"] == "text":
                 # Final answer
