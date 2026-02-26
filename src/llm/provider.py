@@ -150,9 +150,15 @@ class LLMProvider:
                 tools=gemini_tools,
             ),
         )
+        # Guard against empty / blocked responses
+        candidate = resp.candidates[0] if resp.candidates else None
+        if not candidate or not candidate.content or not candidate.content.parts:
+            reason = getattr(candidate, "finish_reason", "UNKNOWN") if candidate else "NO_CANDIDATES"
+            log.warning("Gemini returned no content (finish_reason=%s)", reason)
+            return {"type": "text", "content": "I wasn't able to generate a response. Please try rephrasing your question."}
 
         # Check for function call in parts
-        for part in resp.candidates[0].content.parts:
+        for part in candidate.content.parts:
             if part.function_call:
                 fc = part.function_call
                 return {

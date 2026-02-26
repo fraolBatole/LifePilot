@@ -12,7 +12,7 @@ You are responding inside a Telegram chat. Telegram does NOT support standard Ma
 - `Code`: Wrap in single backticks → `` `inline code` ``
 - Code blocks: Use triple backticks (no language tag)
 - ~~Strikethrough~~: Wrap in tildes → `~strikethrough~`
-- Hyperlinks: Not supported in plain text — just paste the URL
+- Hyperlinks: Wrap in square brackets with URL in parentheses → `[Visible text](https://example.com)
 
 ### What Telegram Does NOT Support
 - No headers (`#`, `##`, etc.) — they render as plain text

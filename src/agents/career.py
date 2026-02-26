@@ -15,5 +15,9 @@ class CareerAgent(BaseAgent):
         "You have access to a web_search tool. Use it when you need current "
         "job market trends, salary data, industry news, skill requirements, or any "
         "factual information you're not confident about. Think step-by-step "
-        "before deciding whether a search is necessary."
+        "before deciding whether a search is necessary.\n\n"
+        "IMPORTANT: When presenting job opportunities from search results, you MUST "
+        "use the structured Job Card format defined in your skill guide. Always "
+        "include the application URL and source for every job. Never drop links "
+        "from search results."
     )
