@@ -1,0 +1,22 @@
+# MCP Server Definitions
+mcp_servers:
+  web_search:
+    command: "npx -y @anthropic/mcp-web-search"
+    description: "Web search capability"
+
+  calculator:
+    command: "npx -y @anthropic/mcp-calculator"
+    description: "Mathematical calculations"
+
+# Per-agent permission allowlists
+agent_permissions:
+  nutrition:
+    allowed: [web_search, calculator]
+  fitness:
+    allowed: [web_search, calculator]
+  finance:
+    allowed: [web_search, calculator]
+  career:
+    allowed: [web_search]
+  manager:
+    allowed: []
