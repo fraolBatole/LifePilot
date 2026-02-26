@@ -25,6 +25,12 @@ class MemoryManager:
         """Assemble the full context window for an LLM call."""
         parts = []
 
+        # Tier 5: User bio (shared across all agents)
+        bio = self.db.get_bio(user_id)
+        if bio:
+            bio_lines = "\n".join(f"- {k}: {v}" for k, v in bio.items() if v)
+            parts.append(f"[User Bio]\n{bio_lines}")
+
         # Tier 4: User profile
         profile = self.db.get_profile(user_id, agent_id)
         if profile:

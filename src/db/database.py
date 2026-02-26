@@ -55,6 +55,13 @@ CREATE TABLE IF NOT EXISTS memory_facts (
     UNIQUE(user_id, agent_id, fact_type, fact_key)
 );
 
+CREATE TABLE IF NOT EXISTS user_bio (
+    id INTEGER PRIMARY KEY,
+    user_id INTEGER UNIQUE REFERENCES users(id),
+    data JSON NOT NULL DEFAULT '{}',
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE INDEX IF NOT EXISTS idx_messages_user_agent ON messages(user_id, agent_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_summaries_user_agent ON summaries(user_id, agent_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_facts_user_agent ON memory_facts(user_id, agent_id);
@@ -232,6 +239,29 @@ class Database:
                 (user_id, agent_id),
             )
         self.conn.commit()
+
+    # -- User Bio --
+
+    def get_bio(self, user_id: int) -> dict:
+        row = self.conn.execute(
+            "SELECT data FROM user_bio WHERE user_id = ?", (user_id,)
+        ).fetchone()
+        return json.loads(row["data"]) if row else {}
+
+    def set_bio(self, user_id: int, data: dict):
+        self.conn.execute(
+            "INSERT INTO user_bio (user_id, data) VALUES (?, ?) "
+            "ON CONFLICT(user_id) DO UPDATE SET data=excluded.data, "
+            "updated_at=CURRENT_TIMESTAMP",
+            (user_id, json.dumps(data)),
+        )
+        self.conn.commit()
+
+    def update_bio_field(self, user_id: int, field: str, value: str):
+        """Update a single field in the user's bio."""
+        bio = self.get_bio(user_id)
+        bio[field] = value
+        self.set_bio(user_id, bio)
 
     def close(self):
         self.conn.close()

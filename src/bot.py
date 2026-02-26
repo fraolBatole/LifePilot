@@ -5,7 +5,7 @@ from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
 from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler,
-    MessageHandler, filters, ContextTypes,
+    MessageHandler, ConversationHandler, filters, ContextTypes,
 )
 
 from db.database import Database
@@ -31,9 +31,35 @@ tool_registry: ToolRegistry = None
 agents: dict = {}
 user_state: dict = {}  # telegram_id -> current agent_id
 
+# ── Bio conversation states ─────────────────────────────────────────
+BIO_NAME, BIO_AGE, BIO_GENDER, BIO_HEIGHT, BIO_WEIGHT, BIO_ACTIVITY, BIO_GOALS = range(7)
+
+BIO_FIELDS = [
+    ("name", "What's your name (or nickname)?", None),
+    ("age", "How old are you?", None),
+    ("gender", "What's your gender?", [
+        [InlineKeyboardButton("👨 Male", callback_data="bio_gender:Male"),
+         InlineKeyboardButton("👩 Female", callback_data="bio_gender:Female")],
+        [InlineKeyboardButton("🧑 Non-binary", callback_data="bio_gender:Non-binary"),
+         InlineKeyboardButton("🤐 Prefer not to say", callback_data="bio_gender:Not specified")],
+    ]),
+    ("height", "What's your height? (e.g., 5'10\" or 178cm)", None),
+    ("weight", "What's your weight? (e.g., 165 lbs or 75 kg)", None),
+    ("activity_level", "What's your activity level?", [
+        [InlineKeyboardButton("🛋️ Sedentary", callback_data="bio_activity:Sedentary")],
+        [InlineKeyboardButton("🚶 Lightly active", callback_data="bio_activity:Lightly active")],
+        [InlineKeyboardButton("🏃 Moderately active", callback_data="bio_activity:Moderately active")],
+        [InlineKeyboardButton("💪 Very active", callback_data="bio_activity:Very active")],
+    ]),
+    ("goals", "Any health, fitness, career, or financial goals you'd like your agents to know about? (or type 'skip')", None),
+]
+
+# ── Menus ────────────────────────────────────────────────────────────
 
 MAIN_MENU = ReplyKeyboardMarkup(
-    [["🥗 Nutrition", "💪 Fitness"], ["💰 Finance", "🎯 Career"], ["🧠 Personal Manager"]],
+    [["🥗 Nutrition", "💪 Fitness"],
+     ["💰 Finance", "🎯 Career"],
+     ["🧠 Personal Manager", "📝 My Bio"]],
     resize_keyboard=True,
 )
 
@@ -70,6 +96,202 @@ def get_user_id(update: Update) -> int:
     username = update.effective_user.username
     return db.get_or_create_user(tg_id, username)
 
+
+# ── Bio helpers ──────────────────────────────────────────────────────
+
+def _format_bio_display(bio: dict) -> str:
+    """Format bio dict for Telegram display."""
+    if not bio:
+        return "No bio saved yet."
+
+    LABELS = {
+        "name": "👤 Name",
+        "age": "🎂 Age",
+        "gender": "⚧ Gender",
+        "height": "📏 Height",
+        "weight": "⚖️ Weight",
+        "activity_level": "🏃 Activity",
+        "goals": "🎯 Goals",
+    }
+    lines = []
+    for key, label in LABELS.items():
+        val = bio.get(key)
+        if val:
+            lines.append(f"{label}: {val}")
+    return "\n".join(lines) if lines else "No bio saved yet."
+
+
+def _bio_action_keyboard(has_bio: bool) -> InlineKeyboardMarkup:
+    buttons = [] 
+    if has_bio:
+        buttons.append([InlineKeyboardButton("✏️ Update Bio", callback_data="bio:update")])
+        buttons.append([InlineKeyboardButton("🗑️ Clear Bio", callback_data="bio:clear")])
+    else:
+        buttons.append([InlineKeyboardButton("📝 Fill Out Bio", callback_data="bio:start")])
+    return InlineKeyboardMarkup(buttons)
+
+
+# ── Bio conversation flow ────────────────────────────────────────────
+
+async def bio_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show current bio and action buttons."""
+    user_state[update.effective_user.id] = None  # exit any active agent
+    user_id = get_user_id(update)
+    bio = db.get_bio(user_id)
+
+    text = f"📝 *Your Bio*\n\n{_format_bio_display(bio)}"
+    await update.message.reply_text(
+        text,
+        reply_markup=_bio_action_keyboard(bool(bio)),
+        parse_mode="Markdown",
+    )
+
+
+async def bio_start_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Start the bio questionnaire from a callback button."""
+    query = update.callback_query
+    await query.answer()
+
+    if query.data == "bio:clear":
+        user_id = get_user_id(update)
+        db.set_bio(user_id, {})
+        await query.edit_message_text("🗑️ Bio cleared! You can fill it out again anytime from the menu.")
+        return ConversationHandler.END
+
+    # bio:start or bio:update — begin the questionnaire
+    context.user_data["bio_draft"] = {}
+    user_id = get_user_id(update)
+    existing = db.get_bio(user_id)
+    if existing and query.data == "bio:update":
+        context.user_data["bio_draft"] = dict(existing)
+
+    await query.edit_message_text(
+        "📝 *Let's set up your bio!*\n\n"
+        "I'll ask you a few quick questions. Your answers help all your agents "
+        "give better, personalized advice.\n\n"
+        "Type 'skip' to skip any question.\n\n"
+        "─ ─ ─ ─ ─ ─ ─ ─\n\n"
+        f"👤 {BIO_FIELDS[0][1]}",
+        parse_mode="Markdown",
+    )
+    return BIO_NAME
+
+
+async def bio_receive_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text.strip()
+    if text.lower() != "skip":
+        context.user_data["bio_draft"]["name"] = text
+
+    await update.message.reply_text(f"🎂 {BIO_FIELDS[1][1]}")
+    return BIO_AGE
+
+
+async def bio_receive_age(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text.strip()
+    if text.lower() != "skip":
+        context.user_data["bio_draft"]["age"] = text
+
+    # Gender has inline buttons
+    await update.message.reply_text(
+        f"⚧ {BIO_FIELDS[2][1]}",
+        reply_markup=InlineKeyboardMarkup(BIO_FIELDS[2][2]),
+    )
+    return BIO_GENDER
+
+
+async def bio_receive_gender(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    value = query.data.split(":")[1]
+    context.user_data["bio_draft"]["gender"] = value
+
+    await query.edit_message_text(f"📏 {BIO_FIELDS[3][1]}")
+    return BIO_HEIGHT
+
+
+async def bio_receive_gender_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle gender typed as text instead of button."""
+    text = update.message.text.strip()
+    if text.lower() != "skip":
+        context.user_data["bio_draft"]["gender"] = text
+
+    await update.message.reply_text(f"📏 {BIO_FIELDS[3][1]}")
+    return BIO_HEIGHT
+
+
+async def bio_receive_height(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text.strip()
+    if text.lower() != "skip":
+        context.user_data["bio_draft"]["height"] = text
+
+    await update.message.reply_text(f"⚖️ {BIO_FIELDS[4][1]}")
+    return BIO_WEIGHT
+
+
+async def bio_receive_weight(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text.strip()
+    if text.lower() != "skip":
+        context.user_data["bio_draft"]["weight"] = text
+
+    # Activity level has inline buttons
+    await update.message.reply_text(
+        f"🏃 {BIO_FIELDS[5][1]}",
+        reply_markup=InlineKeyboardMarkup(BIO_FIELDS[5][2]),
+    )
+    return BIO_ACTIVITY
+
+
+async def bio_receive_activity(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    value = query.data.split(":")[1]
+    context.user_data["bio_draft"]["activity_level"] = value
+
+    await query.edit_message_text(f"🎯 {BIO_FIELDS[6][1]}")
+    return BIO_GOALS
+
+
+async def bio_receive_activity_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle activity level typed as text instead of button."""
+    text = update.message.text.strip()
+    if text.lower() != "skip":
+        context.user_data["bio_draft"]["activity_level"] = text
+
+    await update.message.reply_text(f"🎯 {BIO_FIELDS[6][1]}")
+    return BIO_GOALS
+
+
+async def bio_receive_goals(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text.strip()
+    if text.lower() != "skip":
+        context.user_data["bio_draft"]["goals"] = text
+
+    # Save to DB
+    user_id = get_user_id(update)
+    bio = context.user_data.get("bio_draft", {})
+    db.set_bio(user_id, bio)
+
+    display = _format_bio_display(bio)
+    await update.message.reply_text(
+        f"✅ *Bio saved!*\n\n{display}\n\n"
+        "─ ─ ─ ─ ─ ─ ─ ─\n\n"
+        "All your agents now have access to this info for personalized advice. "
+        "You can update it anytime from the 📝 My Bio button.",
+        parse_mode="Markdown",
+        reply_markup=MAIN_MENU,
+    )
+    return ConversationHandler.END
+
+
+async def bio_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "Bio setup cancelled. You can come back anytime!",
+        reply_markup=MAIN_MENU,
+    )
+    return ConversationHandler.END
+
+
+# ── Core handlers ────────────────────────────────────────────────────
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_state[update.effective_user.id] = None
@@ -130,7 +352,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_state[tg_id] = agent_id
         agent = agents[agent_id]
         await query.edit_message_text(
-            f"{agent.emoji} Fresh start! What's on your mind regarding {agent.name.replace('Bot', '').lower()}?"
+            f"{agent.emoji} Fresh start! What's on your mind regarding {agent.name.replace('Bot', '').lower()}?",
+            parse_mode="Markdown",
         )
 
     elif data == "manager:digest":
@@ -154,7 +377,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         agent_id = data.split(":")[1]
         export = db.export_agent_data(user_id, agent_id)
         export_json = json.dumps(export, indent=2, default=str)
-        # Send as a document
         from io import BytesIO
         buf = BytesIO(export_json.encode())
         buf.name = f"lifepilot_{agent_id}_export.json"
@@ -209,7 +431,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
 
     response = await agent.handle_message(user_id, update.message.text)
-    await update.message.reply_text(response)
+    try:
+        await update.message.reply_text(response, parse_mode="Markdown")
+    except Exception:
+        # Fallback if the LLM response has invalid Markdown
+        await update.message.reply_text(response)
 
 
 def _build_tool_registry() -> ToolRegistry:
@@ -252,9 +478,38 @@ def main():
 
     app = Application.builder().token(token).build()
 
+    # Bio conversation handler (must be added before generic handlers)
+    bio_conv = ConversationHandler(
+        entry_points=[
+            CallbackQueryHandler(bio_start_callback, pattern=r"^bio:(start|update|clear)$"),
+        ],
+        states={
+            BIO_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, bio_receive_name)],
+            BIO_AGE: [MessageHandler(filters.TEXT & ~filters.COMMAND, bio_receive_age)],
+            BIO_GENDER: [
+                CallbackQueryHandler(bio_receive_gender, pattern=r"^bio_gender:"),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, bio_receive_gender_text),
+            ],
+            BIO_HEIGHT: [MessageHandler(filters.TEXT & ~filters.COMMAND, bio_receive_height)],
+            BIO_WEIGHT: [MessageHandler(filters.TEXT & ~filters.COMMAND, bio_receive_weight)],
+            BIO_ACTIVITY: [
+                CallbackQueryHandler(bio_receive_activity, pattern=r"^bio_activity:"),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, bio_receive_activity_text),
+            ],
+            BIO_GOALS: [MessageHandler(filters.TEXT & ~filters.COMMAND, bio_receive_goals)],
+        },
+        fallbacks=[
+            CommandHandler("start", bio_cancel),
+            MessageHandler(filters.Regex(r"^(🥗 Nutrition|💪 Fitness|💰 Finance|🎯 Career|🧠 Personal Manager|📝 My Bio)$"), bio_cancel),
+        ],
+        per_message=False,
+    )
+    app.add_handler(bio_conv)
+
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CallbackQueryHandler(handle_callback))
-    # Menu button handler — matches the exact button labels
+    # Menu button handlers
+    app.add_handler(MessageHandler(filters.Regex(r"^📝 My Bio$"), bio_menu))
     app.add_handler(MessageHandler(
         filters.Regex(r"^(🥗 Nutrition|💪 Fitness|💰 Finance|🎯 Career|🧠 Personal Manager)$"),
         handle_menu,
