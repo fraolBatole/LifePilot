@@ -4,3 +4,4 @@ google-genai==1.5.0
 anthropic==0.42.0
 pyyaml==6.0.2
 python-dotenv==1.0.1
+ddgs>=6.0

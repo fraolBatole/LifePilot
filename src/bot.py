@@ -11,6 +11,8 @@ from telegram.ext import (
 from db.database import Database
 from llm.provider import LLMProvider
 from memory.manager import MemoryManager
+from tools.registry import ToolRegistry
+from tools.web_search import WEB_SEARCH_TOOL
 from agents.nutrition import NutritionAgent
 from agents.fitness import FitnessAgent
 from agents.finance import FinanceAgent
@@ -25,6 +27,7 @@ log = logging.getLogger(__name__)
 db: Database = None
 llm: LLMProvider = None
 memory: MemoryManager = None
+tool_registry: ToolRegistry = None
 agents: dict = {}
 user_state: dict = {}  # telegram_id -> current agent_id
 
@@ -209,8 +212,25 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(response)
 
 
+def _build_tool_registry() -> ToolRegistry:
+    """Create the tool registry and configure per-agent permissions."""
+    registry = ToolRegistry()
+
+    # Register available tools
+    registry.register(WEB_SEARCH_TOOL)
+
+    # Set per-agent permissions (manager has no tools)
+    registry.set_permissions("nutrition", ["web_search"])
+    registry.set_permissions("fitness", ["web_search"])
+    registry.set_permissions("finance", ["web_search"])
+    registry.set_permissions("career", ["web_search"])
+    registry.set_permissions("manager", [])
+
+    return registry
+
+
 def main():
-    global db, llm, memory, agents
+    global db, llm, memory, tool_registry, agents
 
     token = os.getenv("TELEGRAM_BOT_TOKEN")
     if not token:
@@ -220,13 +240,14 @@ def main():
     db = Database()
     llm = LLMProvider()
     memory = MemoryManager(db, llm)
+    tool_registry = _build_tool_registry()
 
     agents = {
-        "nutrition": NutritionAgent(db, llm, memory),
-        "fitness": FitnessAgent(db, llm, memory),
-        "finance": FinanceAgent(db, llm, memory),
-        "career": CareerAgent(db, llm, memory),
-        "manager": ManagerAgent(db, llm, memory),
+        "nutrition": NutritionAgent(db, llm, memory, tool_registry),
+        "fitness": FitnessAgent(db, llm, memory, tool_registry),
+        "finance": FinanceAgent(db, llm, memory, tool_registry),
+        "career": CareerAgent(db, llm, memory, tool_registry),
+        "manager": ManagerAgent(db, llm, memory, tool_registry),
     }
 
     app = Application.builder().token(token).build()
@@ -241,7 +262,7 @@ def main():
     # Free text handler — routes to active agent
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    log.info("LifePilot is running. Press Ctrl+C to stop.")
+    log.info("LifePilot is running (ReAct agents with web search). Press Ctrl+C to stop.")
     app.run_polling()
 
 
