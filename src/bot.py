@@ -13,6 +13,8 @@ from llm.provider import LLMProvider
 from memory.manager import MemoryManager
 from tools.registry import ToolRegistry
 from tools.web_search import WEB_SEARCH_TOOL
+from tools.schedule_task import SCHEDULE_TASK_TOOL, set_scheduler
+from scheduler.engine import JobScheduler
 from agents.nutrition import NutritionAgent
 from agents.fitness import FitnessAgent
 from agents.finance import FinanceAgent
@@ -28,11 +30,13 @@ db: Database = None
 llm: LLMProvider = None
 memory: MemoryManager = None
 tool_registry: ToolRegistry = None
+job_scheduler: JobScheduler = None
 agents: dict = {}
 user_state: dict = {}  # telegram_id -> current agent_id
 
 # ── Bio conversation states ─────────────────────────────────────────
-BIO_NAME, BIO_AGE, BIO_GENDER, BIO_HEIGHT, BIO_WEIGHT, BIO_ACTIVITY, BIO_GOALS = range(7)
+(BIO_NAME, BIO_AGE, BIO_GENDER, BIO_HEIGHT, BIO_WEIGHT, BIO_ACTIVITY,
+ BIO_EDUCATION, BIO_FIELD, BIO_COUNTRY, BIO_EXPERIENCE, BIO_GOALS) = range(11)
 
 BIO_FIELDS = [
     ("name", "What's your name (or nickname)?", None),
@@ -50,6 +54,24 @@ BIO_FIELDS = [
         [InlineKeyboardButton("🚶 Lightly active", callback_data="bio_activity:Lightly active")],
         [InlineKeyboardButton("🏃 Moderately active", callback_data="bio_activity:Moderately active")],
         [InlineKeyboardButton("💪 Very active", callback_data="bio_activity:Very active")],
+    ]),
+    ("education", "What's your education level?", [
+        [InlineKeyboardButton("🎓 High School", callback_data="bio_education:High School"),
+         InlineKeyboardButton("🎓 B.Sc / B.A.", callback_data="bio_education:Bachelor's")],
+        [InlineKeyboardButton("🎓 M.Sc / M.A.", callback_data="bio_education:Master's"),
+         InlineKeyboardButton("🎓 Ph.D.", callback_data="bio_education:PhD")],
+        [InlineKeyboardButton("📚 Bootcamp / Self-taught", callback_data="bio_education:Bootcamp/Self-taught"),
+         InlineKeyboardButton("🤐 Skip", callback_data="bio_education:skip")],
+    ]),
+    ("field_of_study", "What's your field of study or expertise? (e.g., Computer Science, Marketing, Nursing)", None),
+    ("country", "Where are you based? (country or city, e.g., USA, London, Germany)", None),
+    ("work_experience", "How many years of work experience do you have?", [
+        [InlineKeyboardButton("🆕 Student / None", callback_data="bio_experience:Student/None"),
+         InlineKeyboardButton("1️⃣ 0-2 years", callback_data="bio_experience:0-2 years")],
+        [InlineKeyboardButton("2️⃣ 3-5 years", callback_data="bio_experience:3-5 years"),
+         InlineKeyboardButton("3️⃣ 5-10 years", callback_data="bio_experience:5-10 years")],
+        [InlineKeyboardButton("4️⃣ 10+ years", callback_data="bio_experience:10+ years"),
+         InlineKeyboardButton("🤐 Skip", callback_data="bio_experience:skip")],
     ]),
     ("goals", "Any health, fitness, career, or financial goals you'd like your agents to know about? (or type 'skip')", None),
 ]
@@ -85,6 +107,7 @@ def manager_action_keyboard() -> InlineKeyboardMarkup:
     buttons = [
         [InlineKeyboardButton("📊 Full Weekly Digest", callback_data="manager:digest")],
         [InlineKeyboardButton("🔗 Cross-Domain Insights", callback_data="manager:insights")],
+        [InlineKeyboardButton("📅 Scheduled Jobs", callback_data="manager:jobs")],
         [InlineKeyboardButton("📤 Export Data", callback_data="settings:export")],
         [InlineKeyboardButton("🗑️ Delete Agent Data", callback_data="settings:delete")],
     ]
@@ -111,6 +134,10 @@ def _format_bio_display(bio: dict) -> str:
         "height": "📏 Height",
         "weight": "⚖️ Weight",
         "activity_level": "🏃 Activity",
+        "education": "🎓 Education",
+        "field_of_study": "📚 Field",
+        "country": "🌍 Location",
+        "work_experience": "💼 Experience",
         "goals": "🎯 Goals",
     }
     lines = []
@@ -247,8 +274,12 @@ async def bio_receive_activity(update: Update, context: ContextTypes.DEFAULT_TYP
     value = query.data.split(":")[1]
     context.user_data["bio_draft"]["activity_level"] = value
 
-    await query.edit_message_text(f"🎯 {BIO_FIELDS[6][1]}")
-    return BIO_GOALS
+    # Next: education (inline buttons)
+    await query.edit_message_text(
+        f"🎓 {BIO_FIELDS[6][1]}",
+        reply_markup=InlineKeyboardMarkup(BIO_FIELDS[6][2]),
+    )
+    return BIO_EDUCATION
 
 
 async def bio_receive_activity_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -257,7 +288,72 @@ async def bio_receive_activity_text(update: Update, context: ContextTypes.DEFAUL
     if text.lower() != "skip":
         context.user_data["bio_draft"]["activity_level"] = text
 
-    await update.message.reply_text(f"🎯 {BIO_FIELDS[6][1]}")
+    await update.message.reply_text(
+        f"🎓 {BIO_FIELDS[6][1]}",
+        reply_markup=InlineKeyboardMarkup(BIO_FIELDS[6][2]),
+    )
+    return BIO_EDUCATION
+
+
+async def bio_receive_education(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    value = query.data.split(":")[1]
+    if value.lower() != "skip":
+        context.user_data["bio_draft"]["education"] = value
+
+    await query.edit_message_text(f"📚 {BIO_FIELDS[7][1]}")
+    return BIO_FIELD
+
+
+async def bio_receive_education_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text.strip()
+    if text.lower() != "skip":
+        context.user_data["bio_draft"]["education"] = text
+
+    await update.message.reply_text(f"📚 {BIO_FIELDS[7][1]}")
+    return BIO_FIELD
+
+
+async def bio_receive_field(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text.strip()
+    if text.lower() != "skip":
+        context.user_data["bio_draft"]["field_of_study"] = text
+
+    await update.message.reply_text(f"🌍 {BIO_FIELDS[8][1]}")
+    return BIO_COUNTRY
+
+
+async def bio_receive_country(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text.strip()
+    if text.lower() != "skip":
+        context.user_data["bio_draft"]["country"] = text
+
+    # Next: work experience (inline buttons)
+    await update.message.reply_text(
+        f"💼 {BIO_FIELDS[9][1]}",
+        reply_markup=InlineKeyboardMarkup(BIO_FIELDS[9][2]),
+    )
+    return BIO_EXPERIENCE
+
+
+async def bio_receive_experience(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    value = query.data.split(":")[1]
+    if value.lower() != "skip":
+        context.user_data["bio_draft"]["work_experience"] = value
+
+    await query.edit_message_text(f"🎯 {BIO_FIELDS[10][1]}")
+    return BIO_GOALS
+
+
+async def bio_receive_experience_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text.strip()
+    if text.lower() != "skip":
+        context.user_data["bio_draft"]["work_experience"] = text
+
+    await update.message.reply_text(f"🎯 {BIO_FIELDS[10][1]}")
     return BIO_GOALS
 
 
@@ -409,6 +505,57 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         db.delete_agent_data(user_id, agent_id)
         await query.edit_message_text(f"🗑️ All {agents[agent_id].name} data has been deleted.")
 
+    elif data == "manager:jobs":
+        user_id = get_user_id(update)
+        jobs = job_scheduler.get_user_jobs(user_id)
+        if not jobs:
+            await query.edit_message_text(
+                "📅 *Scheduled Jobs*\n\nNo scheduled jobs yet.\n\n"
+                "💡 You can ask any agent to schedule a recurring task. "
+                "For example, tell CareerBot:\n"
+                '"Find me 5 job postings every day at 7 AM"',
+                parse_mode="Markdown",
+            )
+        else:
+            AGENT_EMOJIS = {"nutrition": "🥗", "fitness": "💪", "finance": "💰", "career": "🎯"}
+            lines = ["📅 *Scheduled Jobs*\n"]
+            buttons = []
+            for j in jobs:
+                emoji = AGENT_EMOJIS.get(j["agent_id"], "📌")
+                status = "✅" if j["enabled"] else "⏸️"
+                lines.append(
+                    f"{status} *Job #{j['id']}* — {emoji} {j['agent_id'].title()}\n"
+                    f"   ⏰ Schedule: `{j['cron_expression']}`\n"
+                    f"   📝 {j['task_description'][:80]}"
+                )
+                buttons.append([
+                    InlineKeyboardButton(
+                        f"🗑️ Delete Job #{j['id']}",
+                        callback_data=f"deljob:{j['id']}",
+                    )
+                ])
+            await query.edit_message_text(
+                "\n\n".join(lines),
+                reply_markup=InlineKeyboardMarkup(buttons),
+                parse_mode="Markdown",
+            )
+
+    elif data.startswith("deljob:"):
+        job_id = int(data.split(":")[1])
+        confirm_kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ Yes, delete", callback_data=f"confirmdeljob:{job_id}"),
+             InlineKeyboardButton("❌ Cancel", callback_data="cancel")],
+        ])
+        await query.edit_message_text(
+            f"Are you sure you want to delete scheduled job #{job_id}?",
+            reply_markup=confirm_kb,
+        )
+
+    elif data.startswith("confirmdeljob:"):
+        job_id = int(data.split(":")[1])
+        job_scheduler.remove_job(job_id)
+        await query.edit_message_text(f"🗑️ Scheduled job #{job_id} has been deleted.")
+
     elif data == "cancel":
         await query.edit_message_text("Cancelled.")
 
@@ -426,11 +573,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     user_id = get_user_id(update)
     agent = agents[agent_id]
+    chat_id = update.effective_chat.id
 
     # Show typing indicator
-    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
+    await context.bot.send_chat_action(chat_id=chat_id, action="typing")
 
-    response = await agent.handle_message(user_id, update.message.text)
+    response = await agent.handle_message(user_id, update.message.text, chat_id=chat_id)
     try:
         await update.message.reply_text(response, parse_mode="Markdown")
     except Exception:
@@ -444,15 +592,30 @@ def _build_tool_registry() -> ToolRegistry:
 
     # Register available tools
     registry.register(WEB_SEARCH_TOOL)
+    registry.register(SCHEDULE_TASK_TOOL)
 
     # Set per-agent permissions (manager has no tools)
-    registry.set_permissions("nutrition", ["web_search"])
-    registry.set_permissions("fitness", ["web_search"])
-    registry.set_permissions("finance", ["web_search"])
-    registry.set_permissions("career", ["web_search"])
+    registry.set_permissions("nutrition", ["web_search", "schedule_task"])
+    registry.set_permissions("fitness", ["web_search", "schedule_task"])
+    registry.set_permissions("finance", ["web_search", "schedule_task"])
+    registry.set_permissions("career", ["web_search", "schedule_task"])
     registry.set_permissions("manager", [])
 
     return registry
+
+
+async def post_init(app: Application):
+    """Called after the Application is initialized — start the scheduler."""
+    global job_scheduler
+    job_scheduler = JobScheduler(db, agents, app)
+    set_scheduler(job_scheduler)
+    job_scheduler.start()
+
+
+async def post_shutdown(app: Application):
+    """Called on shutdown — stop the scheduler."""
+    if job_scheduler:
+        job_scheduler.stop()
 
 
 def main():
@@ -476,7 +639,13 @@ def main():
         "manager": ManagerAgent(db, llm, memory, tool_registry),
     }
 
-    app = Application.builder().token(token).build()
+    app = (
+        Application.builder()
+        .token(token)
+        .post_init(post_init)
+        .post_shutdown(post_shutdown)
+        .build()
+    )
 
     # Bio conversation handler (must be added before generic handlers)
     bio_conv = ConversationHandler(
@@ -495,6 +664,16 @@ def main():
             BIO_ACTIVITY: [
                 CallbackQueryHandler(bio_receive_activity, pattern=r"^bio_activity:"),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, bio_receive_activity_text),
+            ],
+            BIO_EDUCATION: [
+                CallbackQueryHandler(bio_receive_education, pattern=r"^bio_education:"),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, bio_receive_education_text),
+            ],
+            BIO_FIELD: [MessageHandler(filters.TEXT & ~filters.COMMAND, bio_receive_field)],
+            BIO_COUNTRY: [MessageHandler(filters.TEXT & ~filters.COMMAND, bio_receive_country)],
+            BIO_EXPERIENCE: [
+                CallbackQueryHandler(bio_receive_experience, pattern=r"^bio_experience:"),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, bio_receive_experience_text),
             ],
             BIO_GOALS: [MessageHandler(filters.TEXT & ~filters.COMMAND, bio_receive_goals)],
         },
@@ -517,7 +696,7 @@ def main():
     # Free text handler — routes to active agent
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    log.info("LifePilot is running (ReAct agents with web search). Press Ctrl+C to stop.")
+    log.info("LifePilot is running (ReAct agents + scheduler). Press Ctrl+C to stop.")
     app.run_polling()
 
 

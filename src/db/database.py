@@ -62,9 +62,21 @@ CREATE TABLE IF NOT EXISTS user_bio (
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS scheduled_jobs (
+    id INTEGER PRIMARY KEY,
+    user_id INTEGER REFERENCES users(id),
+    agent_id TEXT NOT NULL,
+    chat_id INTEGER NOT NULL,
+    cron_expression TEXT NOT NULL,
+    task_description TEXT NOT NULL,
+    enabled INTEGER DEFAULT 1,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE INDEX IF NOT EXISTS idx_messages_user_agent ON messages(user_id, agent_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_summaries_user_agent ON summaries(user_id, agent_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_facts_user_agent ON memory_facts(user_id, agent_id);
+CREATE INDEX IF NOT EXISTS idx_scheduled_jobs_user ON scheduled_jobs(user_id);
 """
 
 
@@ -262,6 +274,46 @@ class Database:
         bio = self.get_bio(user_id)
         bio[field] = value
         self.set_bio(user_id, bio)
+
+    # -- Scheduled Jobs --
+
+    def add_scheduled_job(self, user_id: int, agent_id: str, chat_id: int,
+                          cron_expression: str, task_description: str) -> int:
+        cur = self.conn.execute(
+            "INSERT INTO scheduled_jobs (user_id, agent_id, chat_id, cron_expression, task_description) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (user_id, agent_id, chat_id, cron_expression, task_description),
+        )
+        self.conn.commit()
+        return cur.lastrowid
+
+    def get_scheduled_jobs(self, user_id: int) -> list[dict]:
+        rows = self.conn.execute(
+            "SELECT id, agent_id, cron_expression, task_description, enabled, created_at "
+            "FROM scheduled_jobs WHERE user_id = ? ORDER BY created_at ASC",
+            (user_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_scheduled_job(self, job_id: int) -> dict | None:
+        row = self.conn.execute(
+            "SELECT id, user_id, agent_id, chat_id, cron_expression, task_description, enabled "
+            "FROM scheduled_jobs WHERE id = ?", (job_id,),
+        ).fetchone()
+        return dict(row) if row else None
+
+    def delete_scheduled_job(self, job_id: int):
+        self.conn.execute("DELETE FROM scheduled_jobs WHERE id = ?", (job_id,))
+        self.conn.commit()
+
+    def get_all_scheduled_jobs(self) -> list[dict]:
+        """Get ALL enabled jobs (for scheduler startup reload)."""
+        rows = self.conn.execute(
+            "SELECT sj.id, sj.user_id, sj.agent_id, sj.chat_id, "
+            "sj.cron_expression, sj.task_description "
+            "FROM scheduled_jobs sj WHERE sj.enabled = 1",
+        ).fetchall()
+        return [dict(r) for r in rows]
 
     def close(self):
         self.conn.close()

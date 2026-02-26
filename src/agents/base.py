@@ -24,7 +24,7 @@ class BaseAgent:
     def get_greeting(self) -> str:
         return f"{self.emoji} Hey! I'm {self.name}. What would you like to talk about?"
 
-    async def handle_message(self, user_id: int, text: str) -> str:
+    async def handle_message(self, user_id: int, text: str, chat_id: int = None) -> str:
         self.db.add_message(user_id, self.agent_id, "user", text)
         context = self.memory.build_context(user_id, self.agent_id)
 
@@ -32,6 +32,14 @@ class BaseAgent:
         tools = []
         if self.tool_registry:
             tools = self.tool_registry.get_tools(self.agent_id)
+
+        # Set scheduling context so the schedule_task tool knows who's calling
+        if chat_id:
+            try:
+                from tools.schedule_task import set_call_context
+                set_call_context(user_id, self.agent_id, chat_id)
+            except ImportError:
+                pass
 
         if not tools:
             # No tools — simple single-shot (backward-compatible path)
